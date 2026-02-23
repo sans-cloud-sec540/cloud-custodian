@@ -324,6 +324,11 @@ class Session:
 
     def resource_api_version(self, resource_id):
         """ latest non-preview api version for resource """
+        versions = self.resource_api_versions(resource_id)
+        return versions[0] if versions else None
+
+    def resource_api_versions(self, resource_id):
+        """ non-preview api versions for resource, newest first """
 
         namespace = ResourceIdParser.get_namespace(resource_id)
         resource_type = ResourceIdParser.get_resource_type(resource_id)
@@ -338,16 +343,19 @@ class Session:
 
         # The api version may be directly provided
         if not provider.resource_types and resource_client.providers.api_version:
-            return resource_client.providers.api_version
+            return [resource_client.providers.api_version]
 
         rt = next((t for t in provider.resource_types
                    if StringUtils.equal(t.resource_type, resource_type)), None)
 
         if rt and rt.api_versions:
             versions = [v for v in rt.api_versions if 'preview' not in v.lower()]
-            api_version = versions[0] if versions else rt.api_versions[0]
-            self._provider_cache[cache_id] = api_version
-            return api_version
+            if not versions:
+                versions = rt.api_versions[:1]
+            self._provider_cache[cache_id] = versions
+            return versions
+
+        return []
 
     def get_tenant_id(self):
         self._initialize_session()

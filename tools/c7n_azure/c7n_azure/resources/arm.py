@@ -1,6 +1,10 @@
 # Copyright The Cloud Custodian Authors.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
+
+from azure.core.exceptions import HttpResponseError
+
 from c7n_azure.actions.delete import DeleteAction
 from c7n_azure.actions.lock import LockAction
 from c7n_azure.actions.tagging import (AutoTagDate)
@@ -12,6 +16,8 @@ from c7n_azure.provider import resources
 from c7n_azure.query import QueryResourceManager, QueryMeta, ChildResourceManager, TypeInfo, \
     ChildTypeInfo, TypeMeta
 from c7n_azure.utils import ResourceIdParser
+
+log = logging.getLogger('custodian.azure.arm')
 
 # ARM resources which do not currently support tagging
 # for database it is a C7N known issue (#4543)
@@ -45,10 +51,27 @@ class ArmResourceManager(QueryResourceManager, metaclass=QueryMeta):
                 resource['resourceGroup'] = ResourceIdParser.get_resource_group(resource['id'])
         return resources
 
+    def _get_resource_by_id(self, resource_client, rid):
+        """Fetch a resource by id, falling back to older API versions
+        if the latest is not yet available in the resource's region."""
+        api_versions = self._session.resource_api_versions(rid)
+        for i, api_version in enumerate(api_versions):
+            try:
+                return resource_client.resources.get_by_id(rid, api_version)
+            except HttpResponseError as e:
+                if 'NoRegisteredProviderFound' in str(e) and i < len(api_versions) - 1:
+                    log.warning(
+                        'API version %s not available for %s, '
+                        'falling back to %s',
+                        api_version, rid, api_versions[i + 1])
+                    continue
+                raise
+        raise ValueError(f'No API versions available for resource {rid}')
+
     def get_resources(self, resource_ids):
         resource_client = self.get_client('azure.mgmt.resource.ResourceManagementClient')
         data = [
-            resource_client.resources.get_by_id(rid, self._session.resource_api_version(rid))
+            self._get_resource_by_id(resource_client, rid)
             for rid in resource_ids
         ]
         return self.augment([r.serialize(True) for r in data])
